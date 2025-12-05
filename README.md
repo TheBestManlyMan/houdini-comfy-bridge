@@ -46,7 +46,7 @@ Main Houdini integration:
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/yourusername/houdini-comfy-bridge.git
+   git clone https://github.com/TheBestManlyMan/houdini-comfy-bridge.git
    cd houdini-comfy-bridge
    ```
 
