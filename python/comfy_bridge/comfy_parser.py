@@ -44,7 +44,10 @@ class ComfyWorkflowParser:
             raise FileNotFoundError(f"Workflow file not found: {workflow_path}")
 
         with open(workflow_path, 'r') as f:
-            self.workflow_data = json.load(f)
+            raw_data = json.load(f)
+
+        # Convert from frontend format to API format if needed
+        self.workflow_data = self._convert_to_api_format(raw_data)
 
         self.workflow_path = workflow_path
         self.cached_workflow = self.workflow_data.copy()
@@ -62,11 +65,145 @@ class ComfyWorkflowParser:
         Returns:
             Parsed workflow data
         """
-        self.workflow_data = json.loads(workflow_json)
+        raw_data = json.loads(workflow_json)
+
+        # Convert from frontend format to API format if needed
+        self.workflow_data = self._convert_to_api_format(raw_data)
         self.cached_workflow = self.workflow_data.copy()
         self._extract_input_nodes()
 
         return self.workflow_data
+
+    def _convert_to_api_format(self, workflow_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Convert ComfyUI frontend format to API format if needed.
+
+        Frontend format has: {nodes: [...], links: [...], ...}
+        API format has: {node_id: {class_type: ..., inputs: {...}}, ...}
+
+        Args:
+            workflow_data: Raw workflow data
+
+        Returns:
+            Workflow in API format
+        """
+        # Check if already in API format (has numeric/string keys with class_type)
+        if 'nodes' not in workflow_data:
+            print("[PARSER] Workflow already in API format")
+            return workflow_data
+
+        print("[PARSER] Converting from frontend format to API format")
+
+        # Extract nodes and links
+        nodes = workflow_data.get('nodes', [])
+        links = workflow_data.get('links', [])
+
+        # Build a link lookup: {link_id: [source_node_id, source_slot]}
+        link_map = {}
+        for link in links:
+            # Link format: [link_id, source_node, source_slot, target_node, target_slot, type]
+            if len(link) >= 3:
+                link_id = link[0]
+                source_node = link[1]
+                source_slot = link[2]
+                link_map[link_id] = [str(source_node), source_slot]
+
+        # Convert nodes to API format
+        api_workflow = {}
+
+        for node in nodes:
+            node_id = str(node['id'])
+            class_type = node.get('type', '')
+
+            # Skip nodes without a type
+            if not class_type:
+                continue
+
+            # Build inputs dict
+            inputs = {}
+
+            # Get widget values (these are the actual parameter values)
+            widget_values = node.get('widgets_values', [])
+
+            # Get input definitions
+            input_defs = node.get('inputs', [])
+
+            # Process each input
+            widget_index = 0
+            for input_def in input_defs:
+                input_name = input_def.get('name')
+                input_type = input_def.get('type')
+                link_id = input_def.get('link')
+
+                if link_id is not None and link_id in link_map:
+                    # This input is connected to another node
+                    inputs[input_name] = link_map[link_id]
+                elif 'widget' in input_def:
+                    # This input has a widget - find matching value by type
+                    value_found = False
+
+                    # Try to find a widget value that matches the expected type
+                    while widget_index < len(widget_values):
+                        widget_value = widget_values[widget_index]
+
+                        # Check if type matches
+                        type_matches = self._check_type_compatibility(widget_value, input_type)
+
+                        if type_matches:
+                            inputs[input_name] = widget_value
+                            widget_index += 1
+                            value_found = True
+                            break
+                        else:
+                            # Skip this widget value (might be for a hidden widget)
+                            widget_index += 1
+
+                    if not value_found and widget_index < len(widget_values):
+                        # Fallback: just use the next value if nothing matched
+                        inputs[input_name] = widget_values[widget_index]
+                        widget_index += 1
+
+            # Store node in API format
+            api_workflow[node_id] = {
+                'class_type': class_type,
+                'inputs': inputs
+            }
+
+            # Store title in _meta for INPUT_ detection
+            if 'title' in node or 'properties' in node:
+                title = node.get('title', '')
+                # Also check properties for cnr_id which might contain INPUT_ prefix
+                if not title and 'properties' in node:
+                    title = node['properties'].get('cnr_id', '')
+
+                if title:
+                    api_workflow[node_id]['_meta'] = {'title': title}
+
+        print(f"[PARSER] Converted {len(api_workflow)} nodes to API format")
+        return api_workflow
+
+    def _check_type_compatibility(self, value: Any, expected_type: str) -> bool:
+        """
+        Check if a widget value matches the expected input type.
+
+        Args:
+            value: The widget value to check
+            expected_type: The expected ComfyUI type (INT, FLOAT, STRING, COMBO, etc.)
+
+        Returns:
+            True if the value type is compatible with the expected type
+        """
+        if expected_type == 'INT':
+            return isinstance(value, int) and not isinstance(value, bool)
+        elif expected_type == 'FLOAT':
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+        elif expected_type in ('STRING', 'COMBO'):
+            return isinstance(value, str)
+        elif expected_type == 'BOOLEAN':
+            return isinstance(value, bool)
+        else:
+            # For unknown types, accept anything
+            return True
 
     def _extract_input_nodes(self) -> None:
         """Extract nodes with 'INPUT_' prefix from workflow."""
@@ -76,8 +213,23 @@ class ComfyWorkflowParser:
             return
 
         for node_id, node_data in self.workflow_data.items():
-            class_type = node_data.get('class_type', '')
-            title = node_data.get('_meta', {}).get('title', '')
+            try:
+                # Debug: print type info
+                print(f"[PARSER DEBUG] Node {node_id}: type={type(node_data).__name__}")
+
+                # Skip if node_data is not a dict (malformed workflow data)
+                if not isinstance(node_data, dict):
+                    print(f"[PARSER DEBUG] Skipping non-dict node {node_id}: {node_data}")
+                    continue
+
+                class_type = node_data.get('class_type', '')
+                title = node_data.get('_meta', {}).get('title', '')
+            except Exception as e:
+                print(f"[PARSER ERROR] Failed processing node {node_id}: {e}")
+                print(f"[PARSER ERROR] Node data: {node_data}")
+                import traceback
+                traceback.print_exc()
+                continue
 
             # Check if this is an input node (using title with INPUT_ prefix)
             if title.startswith('INPUT_'):
@@ -248,23 +400,52 @@ class ComfyWorkflowParser:
         if not self.workflow_data:
             raise RuntimeError("No workflow loaded")
 
+        print(f"[UPDATE DEBUG] Input nodes to update: {list(self.input_nodes.keys())}")
+        print(f"[UPDATE DEBUG] Input values: {input_values}")
+
         # Create a deep copy to avoid modifying original
-        updated_workflow = json.loads(json.dumps(self.workflow_data))
+        try:
+            updated_workflow = json.loads(json.dumps(self.workflow_data))
+            print(f"[UPDATE DEBUG] Workflow copied successfully, {len(updated_workflow)} nodes")
+        except Exception as e:
+            print(f"[UPDATE ERROR] Failed to copy workflow: {e}")
+            raise
 
         for node_id, node_info in self.input_nodes.items():
-            param_name = node_info['name']
-            sanitized_name = self._sanitize_name(param_name)
+            try:
+                param_name = node_info['name']
+                sanitized_name = self._sanitize_name(param_name)
+                print(f"[UPDATE DEBUG] Processing node {node_id}, param: {sanitized_name}")
 
-            if sanitized_name in input_values:
-                new_value = input_values[sanitized_name]
+                if sanitized_name in input_values:
+                    new_value = input_values[sanitized_name]
+                    print(f"[UPDATE DEBUG] Updating {node_id} with value: {new_value}")
 
-                # Update the node's inputs with new value
-                if node_id in updated_workflow:
-                    self._update_node_value(
-                        updated_workflow[node_id],
-                        new_value,
-                        node_info['class_type']
-                    )
+                    # Update the node's inputs with new value
+                    if node_id in updated_workflow:
+                        node_data = updated_workflow[node_id]
+                        print(f"[UPDATE DEBUG] Node {node_id} type: {type(node_data).__name__}")
+
+                        # Skip if node_data is not a dict (malformed workflow)
+                        if not isinstance(node_data, dict):
+                            print(f"[UPDATE WARNING] Node {node_id} is not a dict: {node_data}")
+                            continue
+
+                        self._update_node_value(
+                            node_data,
+                            new_value,
+                            node_info['class_type']
+                        )
+                        print(f"[UPDATE DEBUG] Successfully updated node {node_id}")
+                    else:
+                        print(f"[UPDATE WARNING] Node {node_id} not found in workflow")
+
+            except Exception as e:
+                print(f"[UPDATE ERROR] Failed updating node {node_id}: {e}")
+                print(f"[UPDATE ERROR] Node info: {node_info}")
+                import traceback
+                traceback.print_exc()
+                continue
 
         return updated_workflow
 

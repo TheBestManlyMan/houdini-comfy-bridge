@@ -14,8 +14,8 @@ def create_comfy_cop_hda():
     if not cop_context:
         cop_context = hou.node('/').createNode('img')
 
-    # Create base COP node (use null as base)
-    base_node = cop_context.createNode('null', 'comfy_bridge')
+    # Create base COP node (use color as base for COP2 context)
+    base_node = cop_context.createNode('color', 'comfy_bridge')
 
     # Build parameter template group
     ptg = hou.ParmTemplateGroup()
@@ -125,7 +125,6 @@ def create_comfy_cop_hda():
     hda_path = hou.homeHoudiniDirectory() + '/otls/comfy_bridge.hda'
 
     # Create the HDA
-    base_node.type().definition().updateFromNode(base_node)
     hda = base_node.createDigitalAsset(
         name='comfy_bridge',
         hda_file_name=hda_path,

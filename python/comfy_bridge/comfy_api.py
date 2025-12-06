@@ -108,14 +108,35 @@ class ComfyAPI:
             "client_id": self.client_id
         }
 
+        # Debug logging
+        print(f"[DEBUG] Sending to {self.base_url}/prompt")
+        print(f"[DEBUG] Client ID: {self.client_id}")
+        print(f"[DEBUG] Workflow keys: {list(workflow.keys())[:10]}")
+        print(f"[DEBUG] Payload structure: prompt={type(workflow).__name__}, client_id=str")
+
+        # Save payload to file for debugging
+        debug_path = '/tmp/comfyui_payload_debug.json'
+        try:
+            with open(debug_path, 'w') as f:
+                json.dump(payload, f, indent=2)
+            print(f"[DEBUG] Full payload saved to: {debug_path}")
+        except Exception as e:
+            print(f"[DEBUG] Could not save debug file: {e}")
+
         req = urllib.request.Request(
             f"{self.base_url}/prompt",
             data=json.dumps(payload).encode(),
             headers={'Content-Type': 'application/json'}
         )
 
-        with urllib.request.urlopen(req) as response:
-            return json.loads(response.read().decode())
+        try:
+            with urllib.request.urlopen(req) as response:
+                return json.loads(response.read().decode())
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode() if e.fp else "No error body"
+            print(f"[ERROR] HTTP {e.code}: {e.reason}")
+            print(f"[ERROR] Response body: {error_body}")
+            raise
 
     def get_history(self, prompt_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -219,20 +240,28 @@ class ComfyAPI:
         # Wait for completion
         history = self.wait_for_completion(prompt_id, timeout)
 
+        print(f"[API DEBUG] History keys: {history.keys() if history else 'None'}")
+        print(f"[API DEBUG] History status: {history.get('status') if history else 'None'}")
+
         # Extract output images
         outputs = history.get('outputs', {})
+        print(f"[API DEBUG] Outputs: {outputs}")
         images = []
 
         for node_id, node_output in outputs.items():
+            print(f"[API DEBUG] Node {node_id} output: {node_output}")
             if 'images' in node_output:
                 for img_info in node_output['images']:
                     filename = img_info['filename']
                     subfolder = img_info.get('subfolder', '')
                     folder_type = img_info.get('type', 'output')
 
+                    print(f"[API DEBUG] Downloading: {filename} from {folder_type}/{subfolder}")
                     image_data = self.get_image(filename, subfolder, folder_type)
+                    print(f"[API DEBUG] Downloaded {len(image_data)} bytes")
                     images.append((filename, image_data))
 
+        print(f"[API DEBUG] Total images retrieved: {len(images)}")
         return images
 
     def get_queue_info(self) -> Dict[str, Any]:

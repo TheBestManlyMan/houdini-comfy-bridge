@@ -62,3 +62,17 @@ docs/_build/
 # Environment
 .env
 .env.local
+
+# HDA backups (Houdini auto-generates these)
+otls/backup/
+*.hda.bak
+
+# Temporary/debug files
+/tmp/
+*.log
+
+# Lock files
+.~lock.*
+
+# Development test files (keep in dev/ directory)
+test_*.py
