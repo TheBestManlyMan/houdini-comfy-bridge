@@ -11,22 +11,26 @@ import uuid
 import time
 from typing import Dict, List, Optional, Tuple, Any
 
+from .logger import BridgeLogger
+
 
 class ComfyAPI:
     """Client for communicating with ComfyUI REST API."""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8188):
+    def __init__(self, host: str = "127.0.0.1", port: int = 8188, debug: bool = False):
         """
         Initialize ComfyUI API client.
 
         Args:
             host: ComfyUI server host
             port: ComfyUI server port
+            debug: Enable debug logging
         """
         self.host = host
         self.port = port
         self.base_url = f"http://{host}:{port}"
         self.client_id = str(uuid.uuid4())
+        self.logger = BridgeLogger(name=f"comfy_api.{self.client_id[:8]}", debug=debug)
 
     def is_server_alive(self) -> bool:
         """
@@ -108,20 +112,8 @@ class ComfyAPI:
             "client_id": self.client_id
         }
 
-        # Debug logging
-        print(f"[DEBUG] Sending to {self.base_url}/prompt")
-        print(f"[DEBUG] Client ID: {self.client_id}")
-        print(f"[DEBUG] Workflow keys: {list(workflow.keys())[:10]}")
-        print(f"[DEBUG] Payload structure: prompt={type(workflow).__name__}, client_id=str")
-
-        # Save payload to file for debugging
-        debug_path = '/tmp/comfyui_payload_debug.json'
-        try:
-            with open(debug_path, 'w') as f:
-                json.dump(payload, f, indent=2)
-            print(f"[DEBUG] Full payload saved to: {debug_path}")
-        except Exception as e:
-            print(f"[DEBUG] Could not save debug file: {e}")
+        self.logger.debug(f"Queuing workflow with {len(workflow)} nodes")
+        self.logger.debug(f"Workflow keys: {list(workflow.keys())[:10]}")
 
         req = urllib.request.Request(
             f"{self.base_url}/prompt",
@@ -131,11 +123,13 @@ class ComfyAPI:
 
         try:
             with urllib.request.urlopen(req) as response:
-                return json.loads(response.read().decode())
+                result = json.loads(response.read().decode())
+                self.logger.info(f"Workflow queued successfully (prompt_id: {result.get('prompt_id', 'unknown')})")
+                return result
         except urllib.error.HTTPError as e:
             error_body = e.read().decode() if e.fp else "No error body"
-            print(f"[ERROR] HTTP {e.code}: {e.reason}")
-            print(f"[ERROR] Response body: {error_body}")
+            self.logger.error(f"HTTP {e.code}: {e.reason}")
+            self.logger.error(f"Response body: {error_body}")
             raise
 
     def get_history(self, prompt_id: str) -> Optional[Dict[str, Any]]:
@@ -237,31 +231,32 @@ class ComfyAPI:
         if not prompt_id:
             raise RuntimeError("Failed to queue workflow - no prompt_id returned")
 
+        self.logger.info(f"Waiting for workflow completion (timeout: {timeout}s)...")
+
         # Wait for completion
         history = self.wait_for_completion(prompt_id, timeout)
 
-        print(f"[API DEBUG] History keys: {history.keys() if history else 'None'}")
-        print(f"[API DEBUG] History status: {history.get('status') if history else 'None'}")
+        self.logger.debug(f"History keys: {history.keys() if history else 'None'}")
+        self.logger.debug(f"History status: {history.get('status') if history else 'None'}")
 
         # Extract output images
         outputs = history.get('outputs', {})
-        print(f"[API DEBUG] Outputs: {outputs}")
+        self.logger.debug(f"Found {len(outputs)} output nodes")
         images = []
 
         for node_id, node_output in outputs.items():
-            print(f"[API DEBUG] Node {node_id} output: {node_output}")
             if 'images' in node_output:
                 for img_info in node_output['images']:
                     filename = img_info['filename']
                     subfolder = img_info.get('subfolder', '')
                     folder_type = img_info.get('type', 'output')
 
-                    print(f"[API DEBUG] Downloading: {filename} from {folder_type}/{subfolder}")
+                    self.logger.debug(f"Downloading: {filename} from {folder_type}/{subfolder}")
                     image_data = self.get_image(filename, subfolder, folder_type)
-                    print(f"[API DEBUG] Downloaded {len(image_data)} bytes")
+                    self.logger.info(f"Retrieved image: {filename} ({len(image_data)} bytes)")
                     images.append((filename, image_data))
 
-        print(f"[API DEBUG] Total images retrieved: {len(images)}")
+        self.logger.info(f"Workflow complete - retrieved {len(images)} image(s)")
         return images
 
     def get_queue_info(self) -> Dict[str, Any]:

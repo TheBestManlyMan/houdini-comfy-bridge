@@ -73,6 +73,3 @@ otls/backup/
 
 # Lock files
 .~lock.*
-
-# Development test files (keep in dev/ directory)
-test_*.py
